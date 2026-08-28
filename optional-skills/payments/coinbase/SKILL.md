@@ -1,74 +1,166 @@
 ---
 name: coinbase
-description: Manage Coinbase accounts, agentic trades, and payments.
-version: 0.1.0
+description: Manage Coinbase accounts, trading, and portfolios.
+version: 0.2.0
 author: Ethan Oroshiba (ethanoroshiba), Hermes Agent
 license: MIT
 platforms: [linux, macos, windows]
 metadata:
   hermes:
-    tags: [Payments, Coinbase, Crypto, Agentic Trading, x402]
-    related_skills: [mcp-oauth-remote-gateway, mpp-agent]
+    tags: [Coinbase, Crypto, Trading, Portfolios, Brokerage]
+    related_skills: [mcp-oauth-remote-gateway]
 ---
 
 # Coinbase Skill
 
-Use the hosted Coinbase MCP server for brokerage, agentic trading, and payments. Prefer its typed `coinbase_*` tools over terminal commands. The server handles OAuth and requests on the user's behalf; it does not fund an account or replace confirmation for fund-affecting actions.
+Use the hosted Coinbase MCP server (`https://agents.coinbase.com/mcp`) for brokerage: balances,
+portfolios, market data, and spot / futures / equity orders. Prefer its typed
+`coinbase_*` tools over terminal commands. The server handles OAuth and acts on the user's behalf;
+it does not fund an account.
 
 ## When to Use
 
-- Check balances, products, fees, orders, or portfolios.
-- Analyze markets and execute user-approved spot, futures, or equity trades.
-- Place, preview, modify, or cancel a Coinbase brokerage order.
-- Convert assets, transfer between portfolios, or pay an x402 resource.
-- Don't use for account funding; direct the user to Coinbase web or mobile.
+- Check balances, products, fees, orders, fills, or portfolios.
+- Analyze markets and place, preview, modify, or cancel orders.
+- Convert between USDC and USD, or transfer between portfolios.
+- Set up user-approved, explicitly bounded trading automations.
+
+Do not use for: account funding (direct the user to Coinbase web/mobile), generic public prices with
+no Coinbase context, onchain/DeFi activity, or external-wallet sends (the server exposes no external
+withdrawal tools; `coinbase_transfer` moves funds only between Coinbase portfolios).
+
+> Coming soon, not yet available: x402 payments for agent-consumed services. They are not exposed by
+> this server yet.
 
 ## Prerequisites
 
-Add the remote OAuth MCP server to `config.yaml`:
+Install via the catalog (`hermes mcp install coinbase`) or add directly to `config.yaml`:
 
 ```yaml
 mcp_servers:
   coinbase:
     url: "https://agents.coinbase.com/mcp"
     auth: oauth
-    timeout: 180
-    connect_timeout: 60
 ```
 
-Reload MCP servers, complete the browser OAuth flow, and confirm Coinbase tools are available. If OAuth expires, run `hermes mcp reauth coinbase`. If OAuth cannot complete on a headless gateway, use the `mcp-oauth-remote-gateway` skill.
+Reload MCP servers, complete the browser OAuth flow, and confirm the Coinbase tools are available.
+During consent, select only the portfolios you intend to expose. If OAuth expires run
+`hermes mcp reauth coinbase`; on a headless gateway use the `mcp-oauth-remote-gateway` skill.
+
+Note: the remote server is gated to an explicit harness allowlist (ChatGPT, Claude, Claude Code;
+Codex/others pending). If OAuth completes but no tools load, confirm Hermes is allowlisted.
 
 ## How to Run
 
-Call the exposed `coinbase_*` MCP tools directly. Use the tools' schemas and responses as authoritative; do not reconstruct brokerage HTTP requests or fall back to shell commands.
+The tools appear in Hermes as `mcp__coinbase__<tool>` (e.g. `mcp__coinbase__coinbase_balance`). Use
+the live tool schemas and responses as authoritative over this reference; do not reconstruct
+brokerage HTTP requests or fall back to shell commands.
+
+## Tool classification
+
+- **Read-only:** market data, balances, portfolios list/get, orders list/get/fills, fees, conversion
+  quotes, order previews.
+- **State-changing:** orders create/edit/cancel/close-position, conversion execute, transfers, portfolio
+  create/edit/delete.
+
+Never:
+
+- Split an order to evade product or notional limits.
+- Substitute a different asset, quote currency, portfolio, side, order type, or leverage.
+- Claim guaranteed execution, returns, tax treatment, or investment suitability.
+- Call `orders_edit`, `orders_close_position`, or `portfolios_delete` unless the user explicitly
+  requests that exact action.
+- Infer trade direction or amount from portfolio context.
 
 ## Quick Reference
 
-- Market data: `coinbase_products_list`, `coinbase_products_get`, `coinbase_products_ticker`, `coinbase_products_book`, and `coinbase_products_candles`.
-- Account data: `coinbase_balance`, `coinbase_fees`, `coinbase_portfolios_list`, and `coinbase_portfolios_get`.
-- Orders: `coinbase_orders_preview`, `coinbase_orders_create`, `coinbase_orders_get`, `coinbase_orders_list`, `coinbase_orders_edit`, `coinbase_orders_cancel`, and `coinbase_orders_fills`.
-- Convert: `coinbase_convert_quote` → `coinbase_convert_execute` → `coinbase_convert_get`.
-- For x402 resources, discover with `coinbase_x402_resources` before calling `coinbase_x402_fetch` or `coinbase_x402_pay`.
+Read-only: `products_list`, `products_get`, `products_ticker`, `products_book`, `products_candles`,
+`products_best_bid_ask`, `balance`, `fees`, `portfolios_list`, `portfolios_get`, `orders_preview`,
+`orders_list`, `orders_get`, `orders_fills`, `convert_quote`, `convert_get`.
+
+State-changing: `orders_create`, `orders_edit`, `orders_cancel`,
+`orders_close_position`, `convert_execute`, `transfer`, `portfolios_create`, `portfolios_edit`,
+`portfolios_delete`.
+
+Key parameters:
+
+- `balance`: `portfolio_id` (optional — defaults to the default portfolio), `show_zero`, `cursor`,
+  `limit`. Returns an `accounts` array with `available_balance` and `hold`.
+- `fees`: optional `product_type` (`SPOT` | `FUTURE` | `EQUITY`).
+- `products_list`: filter with `symbol` (matches base or quote), `product_ids` (comma-separated
+  string), `product_type` (`SPOT` | `FUTURE` | `EQUITY`), `cursor`, `limit`.
+- `products_candles`: `granularity` is a strict enum `1m,5m,15m,30m,1h,2h,6h,1d` (no `4h`, no `1w`).
+- `orders_*`/`orders_preview`: `side` is `BUY`|`SELL`; `type` is `market`|`limit`|`stop_limit`;
+  `stop_direction` is `up`|`down`; `time_in_force` is `GTC`|`IOC`|`FOK`|`GTD`. `portfolio_id` is
+  optional and defaults to the default portfolio.
+
+## Order sizing and limits
+
+- Set exactly one of `base_size` (asset amount) or `quote_size` (quote-currency spend).
+- Market buy by spend amount uses `quote_size`. Stop-limit orders use `base_size` plus `stop_price`,
+  `limit_price`, and `stop_direction`.
+- Fee handling is asymmetric: a market buy deducts the fee from `quote_size`; a limit buy adds it on
+  top. Preview and surface the net cost.
+- Validate `base_increment` / `quote_increment` / min / max sizes from `products_get` before sizing.
+- Per-order notional is capped (currently **15,000 USD equivalent**) by the server schema.
+- `client_order_id` is your idempotency key (may be auto-generated if omitted). Reuse the same ID only
+  when retrying the identical request after an uncertain response — never mint a new ID to retry.
 
 ## Procedure
 
-1. Select the correct portfolio and inspect balances or market data. Completion: the user confirms the intended asset and funding source.
-2. For agentic trading, research and present a trade proposal, but do not create, edit, cancel, or close a position until the user confirms that specific action. A prior strategy or general instruction is not confirmation for a later trade.
-3. Before any order, conversion, transfer, x402 fetch, or x402 pay, state and get confirmation of the complete action: asset/product, side, amount, price or limit, fees when available, source portfolio, and maximum spend.
-4. Preview large, limit, stop, or futures orders. Completion: user approves the preview terms, including liquidation risk for futures when returned.
-5. Submit the confirmed tool call. Use a stable `client_order_id` or idempotency key for retries when the tool accepts one. Completion: report its response; do not automatically fetch the order afterward.
-6. For a conversion, quote first, show the rate and fees, then confirm before execution.
-7. For x402, select a catalog resource, use only its advertised input schema, and confirm the maximum spend. On retries, reuse the same idempotency key if the tool supports one.
+1. Select the correct portfolio and inspect balances or market data. Resolve the product and funding
+   currency: prefer the user's stated quote currency, else a USDC pair when both USD and USDC are
+   available. Verify the exact product exists (`products_get`) rather than assuming a product ID.
+2. For a trade, validate increments/min/max and the notional cap, then preview
+   (`orders_preview`) — especially for market, limit, stop-limit, futures, large, or unfamiliar orders.
+   Preview is not execution; say so.
+3. Submit the call once with a stable `client_order_id`. Report the returned status; do not
+   automatically follow up. If the outcome is unclear, query `orders_get` with the same `client_order_id`
+   before retrying.
+4. For conversions, quote first, then execute only the matching `from`/`to`/`quote_id` (quotes expire —
+   obtain a fresh quote immediately before execution).
+5. Distinguish order status (submitted/open, partially filled, filled, rejected, cancelled). Never
+   describe an order as filled unless its status or a follow-up lookup confirms it.
+
+## Automations
+
+Every trading automation must declare one authorization mode:
+
+- **Monitor only** — read data and notify on a condition; never place an order.
+- **Preview and ask** — evaluate, generate a preview, and ask before executing.
+- **Pre-authorized execution** — execute within exact product, portfolio, cadence, sizing, and spend
+  limits approved when the schedule was created.
+
+Default to monitor-only if a mode is omitted; never infer pre-authorized execution. For scheduled work,
+define per-run (and where relevant monthly) caps, cadence/timezone, failure behavior, and stop
+conditions. Never exceed approved caps to "catch up" a missed run, and never bunch missed orders into
+the next run. Subjective triggers (news, "good earnings") require an objective rule and explicit
+executor authorization before any auto-execution.
 
 ## Pitfalls
 
-- OAuth scopes and runtime gates limit visible tools and portfolios. Ask the user to reconnect with the required Coinbase consent instead of retrying an authorization failure.
-- Use the quote currency the user specifies. If omitted, inspect balances; if both USD and USDC are available, prefer USDC. Do not silently change products.
-- Native limit and stop orders are durable; do not emulate them with a polling loop.
-- A trade proposal, signal, or strategy is not an authorization to trade. Reconfirm each fund-affecting order action.
-- If an order submission times out, query `coinbase_orders_get` with the same `client_order_id` before retrying. Retry only with that ID if the outcome remains unknown; never submit the same trade with a new ID.
-- x402 accepts only catalog resources; set `max_amount` as a spend ceiling. Never request or expose credentials, raw API keys, or payment details.
+- **Portfolio isolation:** visibility and authority are limited to portfolios authorized during OAuth.
+  Never claim an unauthorized portfolio is empty or nonexistent.
+- **External sends:** there is no withdrawal tool. `coinbase_transfer` is between-portfolios only.
+- **Conversions are stablecoin/fiat only** (USDC/USD). To accumulate BTC/ETH etc. use a spot order.
+- **Granularity / enums:** `products_candles` rejects `4h`/`1w`; `side`/`type`/`stop_direction` enums are
+  case-sensitive (uppercase side, lowercase `stop_limit`).
+- **Retry discipline:** after an uncertain money-moving result, query by order/quote ID; do not retry
+  with a new idempotency key.
+- **Error handling:** 401 → reconnect (`hermes mcp reauth coinbase`); permission denied → verify the
+  portfolio is authorized, don't switch silently; insufficient funds → check *available* (not total)
+  balance and the quote currency; invalid product/increments → refresh product metadata and show the
+  constraints; equities/derivatives unavailable → don't promise activation.
 
 ## Verification
 
-Confirm that `coinbase_balance` returns the expected portfolio balances. If the account has no balances yet, use `coinbase_portfolios_list`. A successful typed response confirms the MCP connection, OAuth authorization, and brokerage read path.
+Confirm `coinbase_balance` (or `coinbase_portfolios_list`) returns the expected balances for the
+authorized portfolio(s). A successful typed response confirms the MCP connection, OAuth authorization,
+and the brokerage read path.
+
+## Disclosure
+
+Provide a concise risk reminder for trades and an enhanced warning for derivatives/leverage. Trading can
+result in substantial loss; derivatives and leverage add liquidation risk. Output is operational
+assistance, not individualized investment, legal, or tax advice — the user authorizes and remains
+responsible for account activity.
